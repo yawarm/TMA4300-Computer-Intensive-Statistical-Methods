@@ -1,0 +1,857 @@
+---
+title: "TMA4300 : Computer Intensive Statistical Methods : Project 3"
+author: "Yawar Mahmood and Baptiste Tesson"
+date: "2024-04-28"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Importing packages
+library(boot)
+```
+
+# Problem 1
+
+Suppose that $Y_1, Y_2, \ldots, Y_n$ are independent random variables, and that each $Y_i \sim \text{Bin}(m_i, p_i)$ where
+
+$$
+\ln \left(\frac{p_i}{1 - p_i}\right) = \beta_0 + \beta_1x_i
+$$
+
+for $i = 1, 2, \ldots, n$.
+
+This is a generalized linear model we fit using the function glm() in R. 
+
+From the fitted model we can extract key information, such as the ML estimate $\hat\beta$ of $\beta$ by using the object call coef, and the variance of $\hat\beta$ by using the object call vcov. 
+
+```{r initialization, include=TRUE}
+# Load data
+load(file=url("https://www.math.ntnu.no/emner/TMA4300/2024v/data.Rdata"))
+
+# Fit the model using glm
+mod <- glm(cbind(y, m - y) ~ x, family=binomial, data=data)
+
+# Extract the MLE of beta
+beta_hat <- coef(mod)
+cat("MLE of Beta:", beta_hat, "\n")
+
+# Extract the original MLEs for the coefficients
+original_beta0 <- beta_hat[1]
+original_beta1 <- beta_hat[2]
+
+# Extract the variance-covariance matrix of the estimates
+var_vcov <- vcov(mod)
+print(var_vcov)
+
+```
+
+We now want to estimate $\hat\beta$ and other quantities associated with it using Bootstrapping.
+
+
+## a)
+
+We start by bootstrapping $B = 10000$ samples by resampling the observations triplets $(m_i, y_i, x_i)$ with replacements. These observations are then used to refit the model, and maintain $\hat\beta^{b*}, b = 1, \dots B$ of $\hat\beta$. The generated replicates are given in a $(B\times2)$-matrix. Some initial values of this matrix are printed below, using head(). 
+
+```{r task 1 a), include=TRUE}
+
+# Define the custom bootstrap function
+bootstrap_glm <- function(mod, data, B = 10000) {
+  # Extract model formula from the provided model
+  formula <- formula(mod)
+  
+  # Initialize a matrix to store bootstrap replicates
+  bootstrap_replicates <- matrix(NA, nrow = B, ncol = 2)
+  
+  # Set a seed for reproducibility
+  set.seed(123)
+  
+  for (b in 1:B) {
+    # Resample indices with replacement
+    indices <- sample(nrow(data), replace = TRUE)
+    
+    # Create a new dataset from the resampled indices
+    data_resampled <- data[indices, ]
+    
+    # Refit the model using the resampled data
+    mod_resampled <- glm(formula, family = binomial, data = data_resampled)
+    
+    # Store the coefficients from the refitted model
+    bootstrap_replicates[b, ] <- coef(mod_resampled)
+  }
+  
+  return(bootstrap_replicates)
+}
+
+# Run 10000 bootstrap samples
+boot_replicates <- bootstrap_glm(mod, data, B=10000)
+
+# Display mean of the bootstrap replicates
+print(mean(boot_replicates[,1]))
+print(mean(boot_replicates[,2]))
+
+# Histogram for beta_0
+hist(boot_replicates[, 1], main="Histogram of Bootstrap Estimates for beta_0", xlab="beta_0", col="lightblue", border="black", breaks=40)
+
+
+# Histogram for beta_1
+hist(boot_replicates[, 2], main="Histogram of Bootstrap Estimates for beta_1", xlab="beta_1", col="lightgreen", border="black", breaks=40)
+
+
+```
+
+
+## b)
+
+Now that all the bootstrap replicates $\hat\beta^{b*}$ are calculated, we carry on to calculate Var$\hat\beta$ based on these. 
+
+```{r task 1 b), include=TRUE}
+
+# Variance of bootstrap estimates for beta0 (intercept)
+var_bootstrap_beta0 <- var(boot_replicates[, 1]) 
+
+# Variance of bootstrap estimates for beta1
+var_bootstrap_beta1 <- var(boot_replicates[, 2]) 
+
+# Display bootstrap variance estimates
+cat("Bootstrap Variance Estimate for beta0:", var_bootstrap_beta0, "\n")
+cat("Bootstrap Variance Estimate for beta1:", var_bootstrap_beta1, "\n")
+
+# Display vcov variance estimates
+cat("\nVariance Estimate from vcov for beta0:", var_vcov[1, 1], "\n")
+cat("Variance Estimate from vcov for beta1:", var_vcov[2, 2], "\n")
+
+
+```
+
+We can now compare the estimates for both cases:
+
+- For $\beta_0$ (intercept): The bootstrap estimated variance is much greater than the variance obtained using vcov(). This may indicate that the bootstrap is capturing more variability in the data, which could be missed in the asymptotic approach of of vcov(). It may be that the assumptions for an asymptotic approach is not met, and therefor vcov() should not be used. We have very few data points here, only 10. This is another argument why the vcov() estimation may not be that good, as there may be some information not captured by the data. 
+
+- $\beta_1$ (slope): The bootstrap estimated variance is much greater than the variance obtained using vcov(), just as in the case of $\beta_0$. 
+
+One could suggest that the bootstrap model is giving a more realistic viewpoint on these estimates, and capturing the variability to a better extend, as it takes into consideration the actual data distribution. 
+
+
+## c)
+
+We now calculate the bias of the MLEs of the intercept and slope parameters. To determine if the estimated parameters bias appear significant, we use a hypothesis test. For our hypotesis test, we formulate:
+
+$$ H_0: \text{The bias is 0}$$
+$$ H_1: \text{The bias is not 0} $$
+We use the t-statistic for this test, which we define as:
+
+$$ t = \frac{\text{Bias}}{\text{SE of Bias}} $$
+We can do this as the bootstrapped samples are independent. Even though $x_i$ may not be independent, so is it fine, as the t-test is robust enough against this violation of the assumption. If they are significant, an bias-correlated estimate will be calculated.  
+
+```{r task 1 c), include=TRUE}
+
+# Calculate the mean of the bootstrap estimates
+mean_bootstrap_beta0 <- mean(boot_replicates[, 1])
+mean_bootstrap_beta1 <- mean(boot_replicates[, 2])
+
+# Calculate the bias
+bias_beta0 <- mean_bootstrap_beta0 - original_beta0
+bias_beta1 <- mean_bootstrap_beta1 - original_beta1
+
+# Calculate standard error of the bias
+se_beta0 <- sqrt(var(boot_replicates[, 1]) / length(boot_replicates[, 1]))
+se_beta1 <- sqrt(var(boot_replicates[, 2]) / length(boot_replicates[, 2]))
+
+# Calculate t-statistics
+t_stat_beta0 <- bias_beta0 / se_beta0
+t_stat_beta1 <- bias_beta1 / se_beta1
+
+# Determine significance of the bias using a 95% confidence interval
+significant_bias_beta0 <- abs(t_stat_beta0) > 1.96
+significant_bias_beta1 <- abs(t_stat_beta1) > 1.96
+
+# Display estimated bias
+cat("Estimated Bias for beta0:", bias_beta0, "\n")
+cat("Estimated Bias for beta1:", bias_beta1, "\n")
+
+# Display if bias is significant or not
+cat("\nSignificant Bias for beta0:", significant_bias_beta0, "\n")
+cat("Significant Bias for beta1:", significant_bias_beta1, "\n")
+
+# Compute bias-corrected estimates if the biases are significant
+if(significant_bias_beta0) {
+  corrected_beta0 <- original_beta0 + bias_beta0
+  cat("Bias-Corrected Estimate for beta0:", corrected_beta0, "\n")
+}
+if(significant_bias_beta1) {
+  corrected_beta1 <- original_beta1 + bias_beta1
+  cat("Bias-Corrected Estimate for beta1:", corrected_beta1, "\n")
+}
+
+
+```
+
+We see that both biases are significant, which suggests that the original MLEs from the GLM may be systematically deviating from the "true" parameters estimated via the bootstrap. 
+
+There can be several reasons for bias. There could have been a mis-specification of the model. If the true relationship between the dependent and independent variables does not follow a logistic model, then the estimates can be biased. Another reason can be finite sample size and information. We are only working with 10 data points. These data points provide minimal information, as each trial results only in success or failure. Both these looked in combination may explain the bias. 
+
+## d)
+
+We will now calculate the 0.95-confidence intervals for each model parameter, and compare these to confidence intervals obtained based on the profile likelihood of each parameter, confint().
+
+```{r task 1 d), include=TRUE}
+
+# 95% confidence using the percentile method
+ci_beta0_percentile <- quantile(boot_replicates[, 1], probs = c(0.025, 0.975))
+ci_beta1_percentile <- quantile(boot_replicates[, 2], probs = c(0.025, 0.975))
+
+# Display percentile CI
+cat("95% CI for beta0 (Percentile Method):", ci_beta0_percentile, "\n")
+cat("95% CI for beta1 (Percentile Method):", ci_beta1_percentile, "\n")
+
+# 95% confidence using the profile likelihood
+ci_profile_likelihood <- confint(mod, level = 0.95)
+
+# Display profile likelihood, confint(), CI
+cat("95% CI for beta0 (Profile Likelihood):", ci_profile_likelihood[1, ], "\n")
+cat("95% CI for beta1 (Profile Likelihood):", ci_profile_likelihood[2, ], "\n")
+
+```
+
+The confidence intervals calculated using the percentile method, are wider compared to the ones calculated using the profile likelihood method. This indicates that the bootstrap approach may reflect more variability in the data. This seems to be in agreement with the results obtained in the previous task.
+
+Both of these intervals, the wide ones from the percentile method and the narrower ones from the profile likelihood method can be useful in each their setting. The likelihood estimates are based heavily on the correctness of the model assumptions. With only 10 data-points, it may be that these are incorrect, and that the interval gives a fake sence of security. 
+
+A wider interval may be preferable in practical applications where ensuring that assumptions are correct, or at least realistic, is critical. 
+
+On the other hand, if the model assumptions are well known and met, the tighter interval will give more precise estimations. 
+
+
+## e)
+
+We now want to redo the analysis performed above using parametric bootstrapping instead. Some initial values of this matrix are printed below, using head(). 
+
+```{r 1 e) a), include=TRUE}
+
+parametric_bootstrap_glm <- function(mod, data, B = 10000) {
+  
+  # Define matrix to store replicates
+  bootstrap_replicates <- matrix(NA, nrow = B, ncol = 2)
+  
+  for(b in 1:B) {
+    # Simulate new response data in accordance with fitted model
+    y_star <- rbinom(n = nrow(data), size = data$m, prob = predict(mod, type = "response"))
+    
+    # Create dataset with the simulated response
+    data_star <- data
+    data_star$y <- y_star
+    
+    # Refit the model to the simulated dataset
+    mod_star <- glm(cbind(y_star, data_star$m - y_star) ~ x, family = binomial, data = data_star)
+    
+    # Store the coefficients
+    bootstrap_replicates[b, ] <- coef(mod_star)
+  }
+  
+  # Return the bootstrap replicates as a Bx2 matrix
+  return(bootstrap_replicates)
+}
+
+# Run 10000 bootstrap samples
+parametric_boot_replicates <- parametric_bootstrap_glm(mod, data, B = 10000)
+
+# Display mean of the bootstrap replicates
+print(mean(parametric_boot_replicates[,1]))
+print(mean(parametric_boot_replicates[,2]))
+
+# Histogram for beta_0
+hist(parametric_boot_replicates[, 1], main="Histogram of Bootstrap Estimates for beta_0", xlab="beta_0", col="lightblue", border="black", breaks=40)
+
+
+# Histogram for beta_1
+hist(parametric_boot_replicates[, 2], main="Histogram of Bootstrap Estimates for beta_1", xlab="beta_1", col="lightgreen", border="black", breaks=40)
+
+```
+
+The histograms here seem to be more "stable" and concise, compared to the ones in 1 a). There is much less doubt here that the values are centered as they are, and they match up better with the estimates made by the glm model. 
+
+
+```{r 1 e) b), include=TRUE}
+
+# Variance of bootstrap estimates for beta0 (intercept)
+var_beta0_parametric <- var(parametric_boot_replicates[, 1])
+
+# Variance of bootstrap estimates for beta1
+var_beta1_parametric <- var(parametric_boot_replicates[, 2])
+
+# Display variance estimates
+cat("Variance Estimate for beta0 (Parametric Bootstrap):", var_beta0_parametric, "\n")
+cat("Variance Estimate for beta1 (Parametric Bootstrap):", var_beta1_parametric, "\n")
+
+```
+
+The same is said for the variance, which is much smaller here than in the non-parametric case. This is evident from the histograms as well. They match up almost exactly with the variances calculated by the vcov() function, for the glm model. 
+
+```{r 1 e) c), include=TRUE}
+
+# Original MLEs
+original_beta0 <- coef(mod)[1]
+original_beta1 <- coef(mod)[2]
+
+# Mean of the bootstrap estimates
+mean_beta0_parametric <- mean(parametric_boot_replicates[, 1])
+mean_beta1_parametric <- mean(parametric_boot_replicates[, 2])
+
+# Calculate the bias
+bias_beta0_parametric <- mean_beta0_parametric - original_beta0
+bias_beta1_parametric <- mean_beta1_parametric - original_beta1
+
+# Calculate standard error of the bias
+se_beta0_parametric <- sqrt(var(parametric_boot_replicates[, 1]) / length(parametric_boot_replicates[, 1]))
+se_beta1_parametric <- sqrt(var(parametric_boot_replicates[, 2]) / length(parametric_boot_replicates[, 2]))
+
+# Calculate t-statistics
+t_stat_beta0_parametric <- bias_beta0_parametric / se_beta0_parametric
+t_stat_beta1_parametric <- bias_beta1_parametric / se_beta1_parametric
+
+# Determine significance of the bias using a 95% confidence interval
+significant_bias_beta0_parametric <- abs(t_stat_beta0_parametric) > 1.96
+significant_bias_beta1_parametric <- abs(t_stat_beta1_parametric) > 1.96
+
+# Display estimated bias
+cat("Estimated Bias for beta0:", bias_beta0_parametric, "\n")
+cat("Estimated Bias for beta1:", bias_beta1_parametric, "\n")
+
+# Display if bias is significant or not
+cat("\nSignificant Bias for beta0:", significant_bias_beta0_parametric, "\n")
+cat("Significant Bias for beta1:", significant_bias_beta1_parametric, "\n")
+
+# Compute bias-corrected estimates if the biases are significant
+if(significant_bias_beta0_parametric) {
+  corrected_beta0_parametric <- original_beta0 + bias_beta0_parametric
+  cat("Bias-Corrected Estimate for beta0:", corrected_beta0_parametric, "\n")
+}
+if(significant_bias_beta1_parametric) {
+  corrected_beta1_parametric <- original_beta1 + bias_beta1_parametric
+  cat("Bias-Corrected Estimate for beta1:", corrected_beta1_parametric, "\n")
+}
+
+```
+
+We set up a similar hypothesis test as done for the non-parametric case. There is some bias here as well, but it is significantly smaller than the bias calculated in the non-parametric case. 
+
+```{r 1 e) d), include=TRUE}
+
+# Percentile Method CI
+ci_beta0_percentile_parametric <- quantile(parametric_boot_replicates[, 1], probs = c(0.025, 0.975))
+ci_beta1_percentile_parametric <- quantile(parametric_boot_replicates[, 2], probs = c(0.025, 0.975))
+
+# Display Percentile Method CI
+cat("95% CI for beta0 (Percentile Method, Parametric):", ci_beta0_percentile_parametric, "\n")
+cat("95% CI for beta1 (Percentile Method, Parametric):", ci_beta1_percentile_parametric, "\n")
+
+# Profile Likelihood CI
+ci_profile_likelihood_parametric <- confint(mod, level = 0.95)
+
+# Display Profile Likelihood CI
+cat("95% CI for beta0 (Profile Likelihood):", ci_profile_likelihood_parametric[1, ], "\n")
+cat("95% CI for beta1 (Profile Likelihood):", ci_profile_likelihood_parametric[2, ], "\n")
+
+```
+
+
+Again, from all the analysis, taking the confidence intervals into consideration, that we once again are more secure in the estimates for $\beta_1$ than that of $\beta_0$. Another observation is that the parametric estimations are more precises, in regards to the estimations, their variances, and the length of the confidence interval than the non-parametric estimations. 
+
+The difference between the parametric and non-parametric approach, and the estimations they create, lies in the underlying assumptions they make about the data distribution. 
+
+The parametric distribution assumes that the data follows a specific distribution, which in our case is specified to be the binomial, as $Y \sim \text{Bin}(m_i, p_i)$
+
+
+# Problem 2
+
+We now consider \(X_1, X_2, \ldots, X_n\) is an i.i.d. sample from an exponential distribution with scale parameter \(\beta\).
+
+## a)
+
+We start by showing that the statistic \( 2 \sum_{i=1}^n \frac{X_i}{\beta} \) is chi-square distributed with \(2n\) degrees of freedom. 
+
+Start by noting that each $X_i$ can be transformed to a standard exponential distribution:
+
+$$ Y_i = \frac{X_i}{\beta} \sim \text{Exponential}(1) $$
+
+Then the sum of $n$ such independent $Y_i$ follows a gamma distribution:
+
+$$ \sum_{i=1}^{n} Y_i \sim \text{Gamma}(n, 1) $$
+
+Scaling this sum by 2:
+
+$$ 2 \sum_{i=1}^{n} Y_i \sim \text{Gamma}(n, \frac{1}{2}) $$
+
+This distribution can also be expressed as a chi-square distribution
+when the shape parameter of the gamma distribution is an integer:
+
+$$ 2 \sum_{i=1}^{n} Y_i \sim \chi^2(2n) $$
+
+Which is exactly what we wanted to show. 
+
+Using this pivotal quantity, we
+can derive an exact confidence interval for $\beta$. 
+
+For a (1 - $\alpha$) confidence interval, we need the quantiles of the chi-square distribution:
+
+$$ \chi^2_{\alpha/2, 2n} \text{ and } \chi^2_{1-\alpha/2, 2n} $$
+
+The confidence interval for $\beta$ is given by:
+
+$$ \left(\frac{2 \sum_{i=1}^n X_i}{\chi^2_{1-\alpha/2, 2n}}, \frac{2 \sum_{i=1}^n X_i}{\chi^2_{\alpha/2, 2n}}\right) $$
+
+This is an exact confidence interval, as the pivotal quantities distribution does not depend on $\beta$.
+
+
+## b)
+
+Now suppose that we were to use parametric bootstrapping and constructed a bootstrap confidence interval for $\beta$ using the percentile method. The probability density function (PDF) for each $X_i$ is given by:
+
+$$
+f(x_i; \beta) = \frac{1}{\beta} e^{-x_i/\beta}, \quad x_i \geq 0
+$$
+
+The MLE of $\beta$ is the sample mean:
+
+$$
+\hat\beta = \frac{1}{n} \sum_{i=1}^n X_i
+$$
+
+The new data $X^*_1, X^*_2, \ldots, X^*_n$ is simulated from the estimated distribution $F(x; \hat\beta)$. Each $X^*_i$ is drawn from an exponential distribution with scale $\hat\beta$:
+
+$$
+X^*_i \sim \text{Exponential}(\hat{\beta})
+$$
+
+Using this information, we can find the exact distribution of $\hat\beta^*$, since each bootstrap replicate is calculated as:
+
+$$
+\hat\beta^* = \frac{1}{n} \sum_{i=1}^n X^*_i
+$$
+
+Since $X^*_i \sim \text{Exponential}(\hat{\beta})$, the sum $\sum_{i=1}^n X^*_i$ follows a gamma distribution:
+
+$$
+\sum_{i=1}^n X^*_i \sim \text{Gamma}(n, \hat{\beta})
+$$
+
+Therefore, $\hat\beta^*$ is distributed as:
+
+$$
+\hat\beta^* = \hat{\beta} \frac{\text{Gamma}(n, 1)}{n}
+$$
+We can use this information to find analytic formulas the confidence intervals as a function of $\hat\beta$. We now assume large n. Then the distribution of $\hat\beta^*$ approximates a normal distribution $N(\hat{\beta}, \frac{\hat{\beta}^2}{n})$. Based on this, the $(1-\alpha)$ confidence interval is simply given by:
+
+$$
+CI(\beta) = \left(\hat{\beta} - z_{\alpha/2} \frac{\hat{\beta}}{\sqrt{n}}, \hat{\beta} + z_{\alpha/2} \frac{\hat{\beta}}{\sqrt{n}}\right)
+$$
+
+Where $z_{\alpha/2}$ is the $(1 - \alpha/2)$ quantile of the standard normal distribution.
+
+
+## c)
+
+To find the exact coverage of the parametric bootstrap percentile interval for $\beta$, we start by considering the pivotal quantity established in 2 a):
+
+$$ Q = \frac{2 \sum_{i=1}^n X_i}{\beta} \sim \chi^2_{2n} $$
+The interval derived from this pivotal quantity is:
+
+$$
+\text{Lower Limit} = \frac{2 \sum_{i=1}^n X_i}{\chi^2_{1-\alpha/2, 2n}}, \quad \text{Upper Limit} = \frac{2 \sum_{i=1}^n X_i}{\chi^2_{\alpha/2, 2n}}
+$$
+
+The exact coverage probability is the probability that this interval contains the true parameter \(\beta\). This is equivalent to: 
+
+$$
+P\left(\frac{2 \sum_{i=1}^n X_i}{\chi^2_{1-\alpha/2, 2n}} \leq \beta \leq \frac{2 \sum_{i=1}^n X_i}{\chi^2_{\alpha/2, 2n}}\right)
+$$
+
+This can be re-written as:
+
+$$
+P\left(\chi^2_{\alpha/2, 2n} \leq \frac{2 \sum_{i=1}^n X_i}{\beta} \leq \chi^2_{1-\alpha/2, 2n}\right)
+$$
+
+This probability simplifies to the difference between the CDF values at these quantiles:
+
+$$
+\text{Coverage} = F_{\chi^2}( \chi^2_{1-\alpha/2, 2n}) - F_{\chi^2}(\chi^2_{\alpha/2, 2n})
+$$
+Let us compute this numerically:
+
+```{r task 2 c), include=TRUE}
+
+# Define sample sizes
+sample_sizes <- c(5, 10, 20, 50, 100)
+
+# Define significance level
+alpha <- 0.05
+
+# Compute coverages
+coverages <- sapply(sample_sizes, function(n) {
+  q_low <- qchisq(alpha / 2, df = 2 * n)
+  q_high <- qchisq(1 - alpha / 2, df = 2 * n)
+  coverage <- pchisq(q_high, df = 2 * n) - pchisq(q_low, df = 2 * n)
+  return(coverage)
+})
+
+# Dataframe for coverages
+coverage_df <- data.frame(
+  Sample_Size = sample_sizes,
+  Coverage = coverages
+)
+
+# Display coverages
+print(coverage_df)
+
+```
+
+Given that the distribution is exact, these coverages should ideally be around \(1 - \alpha\) = 0.95, which they are. This is a good result. Deviations from this value, which are not present, could indicate the impact of the method used or the sample size on the accuracy of the interval. 
+
+
+## d) 
+
+Given the properties of the bootstrap distribution of $\hat{\beta}^*$ derived from exponential data, we can compute the Bias-Corrected and accelerated (BCa) confidence interval for the scale parameter $\beta$. 
+
+```{r task 2 d), include=TRUE}
+
+# Function to calculate BCa confidence intervals
+bca_conf_interval <- function(x, alpha = 0.05, R = 1000) {
+  # MLE for beta
+  beta_hat <- mean(x)
+  
+  # length of data
+  n <- length(x)
+  
+  # Compute bootstrap samples
+  bootstrap_samples <- replicate(R, mean(rexp(n, 1/beta_hat)))
+  
+  #Computing a and b
+  b <- qnorm(pgamma(beta_hat, shape=n, scale=beta_hat/n))
+
+  beta_hat_i <- sapply(1:n, function(i) {
+    mean(x[-i])
+  })
+  psi <- mean(beta_hat_i) - beta_hat_i
+  a <- 1/6*sum(psi^3)/sum(psi^2)^(3/2)
+
+  # Adjusted alpha quantiles for BCa
+  alpha1 <- pnorm(b + (b + qnorm(alpha / 2)) / (1 - a * (b + qnorm(alpha / 2))))
+  alpha2 <- pnorm(b + (b + qnorm(1 - alpha / 2)) / (1 - a * (b + qnorm(1 - alpha / 2))))
+
+  # Confidence interval
+  CI <- quantile(bootstrap_samples, c(alpha1, alpha2))
+  
+  # Return confidence interval
+  return(CI)
+}
+
+```
+
+
+## e)
+
+```{r task 2 e), include=TRUE}
+
+# Simulation to estimate the coverage of the BCa interval
+set.seed(123)
+n <- 10
+num_sim <- 10000
+true_beta <- 1
+coverage_count <- 0
+
+for (i in 1:num_sim) {
+  sample_data <- rexp(n, 1/true_beta)
+  ci <- bca_conf_interval(sample_data)
+  if (ci[1] <= true_beta && ci[2] >= true_beta) {
+    coverage_count <- coverage_count + 1
+  }
+}
+
+# Calculate the estimated coverage
+estimated_coverage <- coverage_count / num_sim
+print(paste("Estimated coverage of the BCa interval:", estimated_coverage))
+
+```
+
+As the estimated coverage of the BCa interval is close to that of the level $\alpha = 0.05$ (0.95 interval), where the estimated values lies at $0.9418$. This result suggests that the BCa method is performing well under the given conditions and setup. 
+
+In task a), an exact (theoretical) confidence interval is derived, leveraging the properties of the given distributions. This method guarantees that the coverage of the intervals is 0.95 - of course, assuming that the theoretical model is correct of the given situation. 
+
+In task b), we use parametric bootstrapping and the percentile method to derive confidence intervals. These are also, in theory, supposed to be exact intervals, but are heavily dependent on how well the bootstrapped values represent the overall data. 
+
+
+# Problem 3
+
+Let \(X\) and \(Y\) both have exponential, independent, distributions with intensity \(\lambda_0\) and \(\lambda_1\) respectively. We do not observe these, but instead, observe \(z_i = \max (x_i, y_i)\) for \(i = 1, \ldots, n\) and \(u_i = I(x_i \geq y_i)\) for \(i = 1, \ldots, n\), where \(I(A) = 1\) if \(A\) is true and \(0\) otherwise. 
+
+Based on the observed \((z_i, u_i)\), we will use the EM algorithm to find the maximum likelihood estimates for \((\lambda_0, \lambda_1)\).
+
+## a)
+
+We start by writing down the log likelihood function for the complete data $(x_i, y_i)$. Since these are independent, the log likelihood function $\ell = log(L)$ for the total data is given by:
+
+$$ \ell = \sum_{i=1}^n \log(\lambda_0 e^{-\lambda_0 x_i}) + \sum_{i=1}^n \log(\lambda_1 e^{-\lambda_1 y_i}) $$
+
+Simplifying, we get:
+
+$$ \ell = n \log \lambda_0 - \lambda_0 \sum_{i=1}^n x_i + n \log \lambda_1 - \lambda_1 \sum_{i=1}^n y_i $$
+
+$$ = n (\log(\lambda_0) + \log(\lambda_1)) - \lambda_0 \sum_{i=1}^n x_i - \lambda_1 \sum_{i=1}^n y_i $$
+
+We take the expectation of this expression, and obtain
+
+$$ E[\ell(\lambda_0, \lambda_1 | x, y) | z, u, \lambda_0^{(t)}, \lambda_1^{(t)}] = \log(\lambda_0) + \log(\lambda_1) - \sum_{i=1}^n ( \lambda_0 E[X_i | z, u] + \lambda_1 E[Y_i | z, u]) $$
+
+We are nearly there, but need to calculate $E[X_i | z, u]$ and $E[Y_i | z, u]$. To calculate these expectations, note that, using the observed data \( (z_i, u_i) \):
+
+- When \( u_i = 1 \): \( x_i = z_i \) and \( y_i \leq z_i \).
+- When \( u_i = 0 \): \( y_i = z_i \) and \( x_i \leq z_i \).
+
+That is, when \( u_i = 1 \) then $E[X_i | z, u] = z_i$, and when \( u_i = 0 \) then $E[X_i | z, u] = z_i$. This must be reflected in the total expression for the expectation. Otherwise, given the parameters \(\lambda_0^{(t)}\) and \(\lambda_1^{(t)}\):
+
+1. **For \(x_i\) (Given \(u_i = 0\))**:
+   \[ E[x_i | x_i \leq z_i] = \frac{1}{\lambda_0^{(t)}} - \frac{z_i}{\exp(\lambda_0^{(t)}z_i)-1} \]
+
+2. **For \(y_i\) (Given \(u_i = 1\))**:
+   \[ E[y_i | y_i \leq z_i] = \frac{1}{\lambda_1^{(t)}} - \frac{z_i}{\exp(\lambda_1^{(t)}z_i)-1} \]
+
+To take all this into consideration, note that this must be the case:
+
+$$E[X_i | z, u] = u_i z_i + (1-u_i)\left(\frac{1}{\lambda_0^{(t)}} - \frac{z_i}{\exp(\lambda_0^{(t)} z_i) - 1}\right)$$
+$$E[Y_i | z, u] = (1-u_i) z_i + u_i\left(\frac{1}{\lambda_1^{(t)}} - \frac{z_i}{\exp(\lambda_1^{(t)} z_i) - 1}\right)$$
+
+Inserting this into the full expression, we get:
+
+$$ E[L|z, u, \lambda_0^{(t)}, \lambda_1^{(t)}] = n(\log \lambda_0 + \log \lambda_1) - \lambda_0 \sum_{i=1}^n \left[u_i z_i + (1-u_i)\left(\frac{1}{\lambda_0^{(t)}} - \frac{z_i}{\exp(\lambda_0^{(t)} z_i) - 1}\right)\right] $$
+$$- \lambda_1 \sum_{i=1}^n \left[(1-u_i) z_i + u_i\left(\frac{1}{\lambda_1^{(t)}} - \frac{z_i}{\exp(\lambda_1^{(t)} z_i) - 1}\right)\right]$$
+
+Which is what we wanted to show. 
+
+
+
+## b)
+
+To find the maximum likelihood estimates, we maximize this expectation with respect to $\lambda_0$ and $\lambda_1$. This involves:
+
+$$
+\frac{\partial}{\partial \lambda_0} E[L \mid z, u, \lambda_0, \lambda_1^{(t)}] = 0
+$$
+
+$$
+\frac{\partial}{\partial \lambda_1} E[L \mid z, u, \lambda_0^{(t)}, \lambda_1] = 0
+$$
+From the simplified expectation, the recursive updates for the parameters in the M-step of the EM algorithm become:
+
+$$
+\lambda_0^{(t+1)} = \frac{n}{\sum_{i=1}^n \left[ u_i z_i + (1-u_i) \left( \frac{1}{\lambda_0^{(t)}} - \frac{z_i}{\exp(\lambda_0^{(t)} z_i) - 1} \right) \right]}
+$$
+
+$$
+\lambda_1^{(t+1)} = \frac{n}{\sum_{i=1}^n \left[ (1-u_i) z_i + u_i \left( \frac{1}{\lambda_1^{(t)}} - \frac{z_i}{\exp(\lambda_1^{(t)} z_i) - 1} \right) \right]}
+$$
+
+These equations are used to iteratively update the estimates of $\lambda_0$ and $\lambda_1$ until convergence. We can do this numerically:
+
+
+```{r task 3 b) , include=TRUE}
+
+# Read data
+u <- scan(file="https://www.math.ntnu.no/emner/TMA4300/2024v/u.txt")
+z <- scan(file="https://www.math.ntnu.no/emner/TMA4300/2024v/z.txt")
+
+# Initial guess
+lambda0 <- 1  
+lambda1 <- 1
+
+# Defining system parameters
+n <- length(u)
+tolerance <- 1e-6
+diff <- Inf
+lambda0_trace <- lambda0
+lambda1_trace <- lambda1
+
+# Running the formulas above to iteratively update lambda vaules
+while (diff > tolerance) {
+  lambda0_new <- n / sum(u * z + (1-u) * (1/lambda0 - z / (exp(lambda0 * z) - 1)))
+  lambda1_new <- n / sum((1-u) * z + u * (1/lambda1 - z / (exp(lambda1 * z) - 1)))
+  
+  diff <- max(abs(lambda0_new - lambda0), abs(lambda1_new - lambda1))
+  
+  lambda0 <- lambda0_new
+  lambda1 <- lambda1_new
+  
+  lambda0_trace <- c(lambda0_trace, lambda0)
+  lambda1_trace <- c(lambda1_trace, lambda1)
+}
+
+# Visualizing Convergence 
+plot(lambda0_trace, type="l", col="blue", ylim=c(min(c(lambda0_trace, lambda1_trace)), max(c(lambda0_trace, lambda1_trace))), xlab="Iteration", ylab="Parameter estimates")
+lines(lambda1_trace, col="red")
+legend("topright", legend=c("lambda0", "lambda1"), col=c("blue", "red"), lty=1)
+
+
+
+```
+
+We see that the values converge rapidly (which is also a consequence of the initial guess), which is a indication of the iteration formulas working well. 
+
+The values converged to are given below:
+
+```{r task 3 b) : results , include=TRUE}
+
+cat("Lambda_0 converged value", lambda0_trace[length(lambda0_trace)])
+cat("Lambda_1 converged value", lambda1_trace[length(lambda1_trace)])
+
+```
+
+## c)
+
+Let us present our bootstrap algorithm through pseudocode before we implement it. 
+
+## 1. Initialize
+- Read the original data vectors $u$ and $z$ from files.
+- Fit the EM algorithm to obtain initial estimates $\hat\lambda_0$ and $\hat\lambda_1$.
+- Define the number of bootstrap samples, \(B\)
+
+## 2. Bootstrap Sampling Process
+
+The process is of bootstrapping is done by the inbuilt boot() function in R. How it works is described below:
+
+For each bootstrap sample \( b = 1 \) to \( B \):
+
+- Sample with replacement from the indices of $u$ and $z$ to create bootstrap samples $u_{star}$ and $z_{star}$.
+- Apply the EM algorithm to each bootstrap sample to estimate $lambda0_{star}$ and $lambda1_{star}$.
+- Store each bootstrap estimate.
+
+### 3. Output
+- Report the calculated statistics
+
+
+```{r task 3 c) , include=TRUE}
+
+# Function to implement the EM algorithm
+em_algorithm <- function(u, z, initial_lambda0 = 1, initial_lambda1 = 1, max_iter = 1000, tol = 1e-6) {
+  
+  # Initialize initial guess
+  lambda0 <- initial_lambda0
+  lambda1 <- initial_lambda1
+  
+  n <- length(u)
+  
+  for (i in 1:max_iter) {
+    
+    # E-step calculations
+    lambda0_old <- lambda0
+    lambda1_old <- lambda1
+    
+    # M-step
+    lambda0 <- n / sum(u * z + (1-u) * (1/lambda0_old - z / (exp(lambda0_old * z) - 1)))
+    lambda1 <- n / sum((1-u) * z + u * (1/lambda1_old - z / (exp(lambda1_old * z) - 1)))
+    
+    # Check for convergence
+    if (max(abs(lambda0 - lambda0_old), abs(lambda1 - lambda1_old)) < tol) {
+      break
+    }
+  }
+  return(c(lambda0, lambda1))
+}
+
+# Define the bootstrap statistic function
+bootstrap_function <- function(data, indices) {
+  u_star <- data$u[indices]
+  z_star <- data$z[indices]
+  return(em_algorithm(u_star, z_star))
+}
+
+# Read data
+u <- scan("https://www.math.ntnu.no/emner/TMA4300/2024v/u.txt")
+z <- scan("https://www.math.ntnu.no/emner/TMA4300/2024v/z.txt")
+
+# Initial guess
+lambda0_hat <- 1
+lambda1_hat <- 1
+
+# Prepare data for bootstrapping
+data <- data.frame(u = u, z = z)
+
+# Run Bootstrap
+results <- boot(data, statistic = bootstrap_function, R = 1000)
+
+# Correlation
+lambda0_boot <- results$t[, 1]
+lambda1_boot <- results$t[, 2]
+
+cor_3c <- cor(results$t[, 1], results$t[, 2])
+
+# Output Statistics
+print(results)
+print(cor_3c)
+
+```
+
+Looking at the results of the bias corrected estimates from the EM-algorithm, we see that they line up pretty well with the ones calculated using the maximum likelihood estimates. Which one of these to choose is based on several factors. 
+
+- Biases: These are very small compared to the estimates them self, being $0.00734580$ and $0.03306683$ respectively for $\lambda_0$ and $\lambda_1$. This indicates that the estimated values does not contain any "great" errors. 
+
+- Standard Deviation: These are $0.2479562$ and $0.7992224$ respectively for $\lambda_0$ and $\lambda_1$. These are pretty significant compared to the scale of the parameters. This may be concerning!
+
+- Correlation: The correlation is low, $0.05461368$, suggesting little dependency between the parameters. That is, errors in estimating one parameter will not affect the estimation of the other, which is a good thing. 
+
+In which one to choose, depends. If the model is highly sensitive to biases, then one should use the bias corrected version of the estimates. If the model is not highly sensitive to bias, I would stick to the MLE estimates, as the variability in the estimates from the EM-algorithm is significant. 
+
+
+## d)
+
+The joint density function \(f_{Z_i, U_i}(z_i, u_i | \lambda_0, \lambda_1)\) can be derived in two cases. 
+
+Density Function for \(Z_i\) when \(U_i = 1\):
+
+\[ f_{Z_i | U_i = 1}(z) = \lambda_0 e^{-\lambda_0 z} (1 - e^{-\lambda_1 z}) \]
+
+Density Function for \(Z_i\) when \(U_i = 0\):
+
+\[ f_{Z_i | U_i = 0}(z) = \lambda_1 e^{-\lambda_1 z} (1 - e^{-\lambda_0 z}) \]
+
+These expressions represent the maximum of two exponential distributions, with the indicator \(U_i\) determining which variable is larger. Combining these, we get:
+
+$$ f_{Z_i, U_i}(z_i, u_i | \lambda_0, \lambda_1) = u_i \lambda_0 e^{-\lambda_0 z_i} (1 - e^{-\lambda_1 z_i}) + (1 - u_i) \lambda_1 e^{-\lambda_1 z_i} (1 - e^{-\lambda_0 z_i}) $$
+
+The is an complex expression, which makes it hard to find a solution analytically Due to this, we will find the MLEs numerically. We do this using the inbuilt optim() function in R.  
+
+
+```{r task 3 d), include=TRUE}
+
+# Define log-likelihood function
+logLikelihood <- function(params, z, u) {
+  lambda0 <- params[1]
+  lambda1 <- params[2]
+  likelihood <- ifelse(u == 1,
+                       lambda0 * exp(-lambda0 * z) * (1 - exp(-lambda1 * z)),
+                       lambda1 * exp(-lambda1 * z) * (1 - exp(-lambda0 * z)))
+  return(-sum(log(likelihood)))  # Negative for minimization
+}
+
+# Initial guesses for lambda0 and lambda1
+initial_params <- c(1, 1)
+
+# Optimization
+result <- optim(initial_params, logLikelihood, z = z, u = u, method = "BFGS")
+
+cat("Optimal Parameters:\n", result$par)
+
+
+```
+
+The results we get are promising, as they align with both the estimates calculated with the EM-algorithm and the convergence curves from the direct optimization recursion. 
+
+Numerical solutions, such as the EM-algorithm, tend to be easier to implement than finding an exact solution, but the direct method has some advantages as well:
+
+Direct optimization does not rely on iterative estimation of hidden variables and potentially offers a more straightforward approach to finding the maximum likelihood by considering all parameters simultaneously. The downside is that this may be hard as problems get more complex!
